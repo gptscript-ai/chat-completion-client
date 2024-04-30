@@ -15,6 +15,8 @@ const (
 	GPT432K               = "gpt-4-32k"
 	GPT40613              = "gpt-4-0613"
 	GPT40314              = "gpt-4-0314"
+	GPT4Turbo             = "gpt-4-turbo"
+	GPT4Turbo20240409     = "gpt-4-turbo-2024-04-09"
 	GPT4Turbo0125         = "gpt-4-0125-preview"
 	GPT4Turbo1106         = "gpt-4-1106-preview"
 	GPT4TurboPreview      = "gpt-4-turbo-preview"
