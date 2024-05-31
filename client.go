@@ -48,6 +48,10 @@ func NewClientWithConfig(config ClientConfig) *Client {
 	}
 }
 
+func (c *Client) SetAPIKey(apiKey string) {
+	c.config.authToken = apiKey
+}
+
 type requestOptions struct {
 	body   any
 	header http.Header
