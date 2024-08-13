@@ -48,6 +48,10 @@ func NewClientWithConfig(config ClientConfig) *Client {
 	}
 }
 
+func (c *Client) GetAPIKeyAndBaseURL() (string, string) {
+	return c.config.authToken, c.config.BaseURL
+}
+
 func (c *Client) SetAPIKey(apiKey string) {
 	c.config.authToken = apiKey
 }
