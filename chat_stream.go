@@ -42,12 +42,17 @@ type ChatCompletionStream struct {
 func (c *Client) CreateChatCompletionStream(
 	ctx context.Context,
 	request ChatCompletionRequest,
+	headers map[string]string,
 ) (stream *ChatCompletionStream, err error) {
 	urlSuffix := chatCompletionsSuffix
 	request.Stream = true
 	req, err := c.newRequest(ctx, http.MethodPost, c.fullURL(urlSuffix, request.Model), withBody(request))
 	if err != nil {
 		return nil, err
+	}
+
+	for k, v := range headers {
+		req.Header.Add(k, v)
 	}
 
 	resp, err := sendRequestStream[ChatCompletionStreamResponse](c, req)
