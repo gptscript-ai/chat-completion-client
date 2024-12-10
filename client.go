@@ -8,8 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"slices"
 	"strings"
+	"time"
 )
 
 // Client is OpenAI GPT-3 API client.
@@ -86,8 +89,57 @@ func (c *Client) newRequest(ctx context.Context, method, url string, setters ...
 	return req, nil
 }
 
-func (c *Client) sendRequest(req *http.Request, v Response) error {
+type RetryOptions struct {
+	// Retries is the number of times to retry the request. 0 means no retries.
+	Retries int
+
+	// RetryAboveCode is the status code above which the request should be retried.
+	RetryAboveCode int
+	RetryCodes     []int
+}
+
+func NewDefaultRetryOptions() RetryOptions {
+	return RetryOptions{
+		Retries:        0,       // = one try, no retries
+		RetryAboveCode: 1,       // any - doesn't matter
+		RetryCodes:     []int{}, // none - doesn't matter
+	}
+}
+
+func (r *RetryOptions) complete(opts ...RetryOptions) {
+	for _, opt := range opts {
+		if opt.Retries > 0 {
+			r.Retries = opt.Retries
+		}
+		if opt.RetryAboveCode > 0 {
+			r.RetryAboveCode = opt.RetryAboveCode
+		}
+		if len(opt.RetryCodes) > 0 {
+			for _, code := range opt.RetryCodes {
+				if !slices.Contains(r.RetryCodes, code) {
+					r.RetryCodes = append(r.RetryCodes, code)
+				}
+			}
+		}
+	}
+}
+
+func (r *RetryOptions) canRetry(statusCode int) bool {
+	if r.RetryAboveCode > 0 && statusCode > r.RetryAboveCode {
+		return true
+	}
+	if len(r.RetryCodes) == 0 {
+		return false
+	}
+	return slices.Contains(r.RetryCodes, statusCode)
+}
+
+func (c *Client) sendRequest(req *http.Request, v Response, retryOpts ...RetryOptions) error {
 	req.Header.Set("Accept", "application/json")
+
+	// Default Options
+	options := NewDefaultRetryOptions()
+	options.complete(retryOpts...)
 
 	// Check whether Content-Type is already set, Upload Files API requires
 	// Content-Type == multipart/form-data
@@ -96,57 +148,137 @@ func (c *Client) sendRequest(req *http.Request, v Response) error {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	res, err := c.config.HTTPClient.Do(req)
-	if err != nil {
-		return err
+	const baseDelay = time.Millisecond * 200
+	var (
+		resp     *http.Response
+		err      error
+		failures []string
+	)
+
+	// Save the original request body
+	var bodyBytes []byte
+	if req.Body != nil {
+		bodyBytes, err = io.ReadAll(req.Body)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("failed to read request body: %v", err))
+			return fmt.Errorf("failed to read request body: %v; failures: %v", err, strings.Join(failures, "; "))
+		}
 	}
 
-	defer res.Body.Close()
+	for i := 0; i <= options.Retries; i++ {
+		// Check if context was canceled (timeout) before retrying
+		if req.Context().Err() != nil {
+			failures = append(failures, fmt.Sprintf("exiting due to canceled context after try #%d/%d: %v", i+1, options.Retries+1, req.Context().Err()))
+			break
+		}
 
-	if isFailureStatusCode(res) {
-		return c.handleErrorResp(res)
+		// Reset body to the original request body
+		if bodyBytes != nil {
+			req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		}
+
+		resp, err = c.config.HTTPClient.Do(req)
+		if err == nil && !isFailureStatusCode(resp) {
+			defer resp.Body.Close()
+			if v != nil {
+				v.SetHeader(resp.Header)
+			}
+			return decodeResponse(resp.Body, v)
+		}
+
+		// handle connection errors
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("#%d/%d failed to send request: %v", i+1, options.Retries+1, err))
+			continue
+		}
+
+		// handle status codes
+		failures = append(failures, fmt.Sprintf("#%d/%d error response received: %v", i+1, options.Retries+1, c.handleErrorResp(resp)))
+
+		// exit on non-retriable status codes
+		if !options.canRetry(resp.StatusCode) {
+			failures = append(failures, fmt.Sprintf("exiting due to non-retriable error in try #%d/%d: %v", i+1, options.Retries+1, resp.StatusCode))
+			return fmt.Errorf("request failed on non-retriable error: %v", strings.Join(failures, "; "))
+		}
+
+		// exponential backoff
+		delay := baseDelay * time.Duration(1<<i)
+		jitter := time.Duration(rand.Int63n(int64(baseDelay)))
+		time.Sleep(delay + jitter)
 	}
-
-	if v != nil {
-		v.SetHeader(res.Header)
-	}
-
-	return decodeResponse(res.Body, v)
+	return fmt.Errorf("request failed %d times: %v", options.Retries+1, strings.Join(failures, "; "))
 }
 
-func (c *Client) sendRequestRaw(req *http.Request) (body io.ReadCloser, err error) {
-	resp, err := c.config.HTTPClient.Do(req)
-	if err != nil {
-		return
-	}
-
-	if isFailureStatusCode(resp) {
-		err = c.handleErrorResp(resp)
-		return
-	}
-	return resp.Body, nil
-}
-
-func sendRequestStream[T streamable](client *Client, req *http.Request) (*streamReader[T], error) {
+func sendRequestStream[T streamable](client *Client, req *http.Request, retryOpts ...RetryOptions) (*streamReader[T], error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("Connection", "keep-alive")
 
-	resp, err := client.config.HTTPClient.Do(req) //nolint:bodyclose // body is closed in stream.Close()
-	if err != nil {
-		return new(streamReader[T]), err
+	// Default Retry Options
+	options := NewDefaultRetryOptions()
+	options.complete(retryOpts...)
+
+	const baseDelay = time.Millisecond * 200
+	var (
+		err      error
+		failures []string
+	)
+
+	// Save the original request body
+	var bodyBytes []byte
+	if req.Body != nil {
+		bodyBytes, err = io.ReadAll(req.Body)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("failed to read request body: %v", err))
+			return nil, fmt.Errorf("failed to read request body: %v; failures: %v", err, strings.Join(failures, "; "))
+		}
 	}
-	if isFailureStatusCode(resp) {
-		return new(streamReader[T]), client.handleErrorResp(resp)
+
+	for i := 0; i <= options.Retries; i++ {
+		// Check if context was canceled (timeout) before retrying
+		if req.Context().Err() != nil {
+			failures = append(failures, fmt.Sprintf("exiting due to canceled context after try #%d/%d: %v", i+1, options.Retries+1, req.Context().Err()))
+			break
+		}
+
+		// Reset body to the original request body
+		if bodyBytes != nil {
+			req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		}
+
+		resp, err := client.config.HTTPClient.Do(req) //nolint:bodyclose // body is closed in stream.Close()
+		if err == nil && !isFailureStatusCode(resp) {
+			// we're good!
+			return &streamReader[T]{
+				emptyMessagesLimit: client.config.EmptyMessagesLimit,
+				reader:             bufio.NewReader(resp.Body),
+				response:           resp,
+				errBuffer:          &bytes.Buffer{},
+				httpHeader:         httpHeader(resp.Header),
+			}, nil
+		}
+
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("#%d/%d failed to send request: %v", i+1, options.Retries+1, err))
+			continue
+		}
+
+		// handle status codes
+		failures = append(failures, fmt.Sprintf("#%d/%d error response received: %v", i+1, options.Retries+1, client.handleErrorResp(resp)))
+
+		// exit on non-retriable status codes
+		if !options.canRetry(resp.StatusCode) {
+			failures = append(failures, fmt.Sprintf("exiting due to non-retriable error in try #%d/%d: %v", i+1, options.Retries+1, resp.StatusCode))
+			return nil, fmt.Errorf("request failed on non-retriable error: %v", strings.Join(failures, "; "))
+		}
+
+		// exponential backoff
+		delay := baseDelay * time.Duration(1<<i)
+		jitter := time.Duration(rand.Int63n(int64(baseDelay)))
+		time.Sleep(delay + jitter)
 	}
-	return &streamReader[T]{
-		emptyMessagesLimit: client.config.EmptyMessagesLimit,
-		reader:             bufio.NewReader(resp.Body),
-		response:           resp,
-		errBuffer:          &bytes.Buffer{},
-		httpHeader:         httpHeader(resp.Header),
-	}, nil
+	return nil, fmt.Errorf("request failed %d times: %v", options.Retries+1, strings.Join(failures, "; "))
 }
 
 func (c *Client) setCommonHeaders(req *http.Request) {
