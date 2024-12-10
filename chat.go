@@ -329,6 +329,7 @@ func (c *Client) CreateChatCompletion(
 	ctx context.Context,
 	request ChatCompletionRequest,
 	headers map[string]string,
+	retryOpts ...RetryOptions,
 ) (response ChatCompletionResponse, err error) {
 	if request.Stream {
 		err = ErrChatCompletionStreamNotSupported
@@ -346,6 +347,6 @@ func (c *Client) CreateChatCompletion(
 		req.Header.Add(k, v)
 	}
 
-	err = c.sendRequest(req, &response)
+	err = c.sendRequest(req, &response, retryOpts...)
 	return
 }
