@@ -102,7 +102,7 @@ func NewDefaultRetryOptions() RetryOptions {
 	return RetryOptions{
 		Retries:        0,       // = one try, no retries
 		RetryAboveCode: 1,       // any - doesn't matter
-		RetryCodes:     []int{}, // none - doesn't matter
+		RetryCodes:     nil, // none - doesn't matter
 	}
 }
 
