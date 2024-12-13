@@ -114,11 +114,9 @@ func (r *RetryOptions) complete(opts ...RetryOptions) {
 		if opt.RetryAboveCode > 0 {
 			r.RetryAboveCode = opt.RetryAboveCode
 		}
-		if len(opt.RetryCodes) > 0 {
-			for _, code := range opt.RetryCodes {
-				if !slices.Contains(r.RetryCodes, code) {
-					r.RetryCodes = append(r.RetryCodes, code)
-				}
+		for _, code := range opt.RetryCodes {
+			if !slices.Contains(r.RetryCodes, code) {
+				r.RetryCodes = append(r.RetryCodes, code)
 			}
 		}
 	}
