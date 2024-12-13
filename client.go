@@ -100,8 +100,8 @@ type RetryOptions struct {
 
 func NewDefaultRetryOptions() RetryOptions {
 	return RetryOptions{
-		Retries:        0,       // = one try, no retries
-		RetryAboveCode: 1,       // any - doesn't matter
+		Retries:        0,   // = one try, no retries
+		RetryAboveCode: 1,   // any - doesn't matter
 		RetryCodes:     nil, // none - doesn't matter
 	}
 }
@@ -125,9 +125,6 @@ func (r *RetryOptions) complete(opts ...RetryOptions) {
 func (r *RetryOptions) canRetry(statusCode int) bool {
 	if r.RetryAboveCode > 0 && statusCode > r.RetryAboveCode {
 		return true
-	}
-	if len(r.RetryCodes) == 0 {
-		return false
 	}
 	return slices.Contains(r.RetryCodes, statusCode)
 }
@@ -157,12 +154,14 @@ func (c *Client) sendRequest(req *http.Request, v Response, retryOpts ...RetryOp
 	var bodyBytes []byte
 	if req.Body != nil {
 		bodyBytes, err = io.ReadAll(req.Body)
+		_ = req.Body.Close()
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("failed to read request body: %v", err))
 			return fmt.Errorf("failed to read request body: %v; failures: %v", err, strings.Join(failures, "; "))
 		}
 	}
 
+retryLoop:
 	for i := 0; i <= options.Retries; i++ {
 		// Check if context was canceled (timeout) before retrying
 		if req.Context().Err() != nil {
@@ -202,7 +201,12 @@ func (c *Client) sendRequest(req *http.Request, v Response, retryOpts ...RetryOp
 		// exponential backoff
 		delay := baseDelay * time.Duration(1<<i)
 		jitter := time.Duration(rand.Int63n(int64(baseDelay)))
-		time.Sleep(delay + jitter)
+		select {
+		case <-req.Context().Done():
+			failures = append(failures, fmt.Sprintf("exiting due to canceled context after try #%d/%d: %v", i+1, options.Retries+1, req.Context().Err()))
+			break retryLoop
+		case <-time.After(delay + jitter):
+		}
 	}
 	return fmt.Errorf("request failed %d times: %v", options.Retries+1, strings.Join(failures, "; "))
 }
