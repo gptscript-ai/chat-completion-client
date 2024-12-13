@@ -163,11 +163,6 @@ func (c *Client) sendRequest(req *http.Request, v Response, retryOpts ...RetryOp
 
 retryLoop:
 	for i := 0; i <= options.Retries; i++ {
-		// Check if context was canceled (timeout) before retrying
-		if req.Context().Err() != nil {
-			failures = append(failures, fmt.Sprintf("exiting due to canceled context after try #%d/%d: %v", i+1, options.Retries+1, req.Context().Err()))
-			break
-		}
 
 		// Reset body to the original request body
 		if bodyBytes != nil {
@@ -231,18 +226,15 @@ func sendRequestStream[T streamable](client *Client, req *http.Request, retryOpt
 	var bodyBytes []byte
 	if req.Body != nil {
 		bodyBytes, err = io.ReadAll(req.Body)
+		_ = req.Body.Close()
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("failed to read request body: %v", err))
 			return nil, fmt.Errorf("failed to read request body: %v; failures: %v", err, strings.Join(failures, "; "))
 		}
 	}
 
+streamRetryLoop:
 	for i := 0; i <= options.Retries; i++ {
-		// Check if context was canceled (timeout) before retrying
-		if req.Context().Err() != nil {
-			failures = append(failures, fmt.Sprintf("exiting due to canceled context after try #%d/%d: %v", i+1, options.Retries+1, req.Context().Err()))
-			break
-		}
 
 		// Reset body to the original request body
 		if bodyBytes != nil {
@@ -278,7 +270,12 @@ func sendRequestStream[T streamable](client *Client, req *http.Request, retryOpt
 		// exponential backoff
 		delay := baseDelay * time.Duration(1<<i)
 		jitter := time.Duration(rand.Int63n(int64(baseDelay)))
-		time.Sleep(delay + jitter)
+		select {
+		case <-req.Context().Done():
+			failures = append(failures, fmt.Sprintf("exiting due to canceled context after try #%d/%d: %v", i+1, options.Retries+1, req.Context().Err()))
+			break streamRetryLoop
+		case <-time.After(delay + jitter):
+		}
 	}
 	return nil, fmt.Errorf("request failed %d times: %v", options.Retries+1, strings.Join(failures, "; "))
 }
