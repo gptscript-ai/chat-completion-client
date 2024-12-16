@@ -43,6 +43,7 @@ func (c *Client) CreateChatCompletionStream(
 	ctx context.Context,
 	request ChatCompletionRequest,
 	headers map[string]string,
+	retryOpts ...RetryOptions,
 ) (stream *ChatCompletionStream, err error) {
 	urlSuffix := chatCompletionsSuffix
 	request.Stream = true
@@ -55,7 +56,7 @@ func (c *Client) CreateChatCompletionStream(
 		req.Header.Add(k, v)
 	}
 
-	resp, err := sendRequestStream[ChatCompletionStreamResponse](c, req)
+	resp, err := sendRequestStream[ChatCompletionStreamResponse](c, req, retryOpts...)
 	if err != nil {
 		return
 	}
