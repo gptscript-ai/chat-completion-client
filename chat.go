@@ -9,7 +9,7 @@ import (
 
 // Chat message role defined by the OpenAI API.
 const (
-	ChatMessageRoleSystem    = "system"
+	ChatMessageRoleSystem    = "developer"
 	ChatMessageRoleUser      = "user"
 	ChatMessageRoleAssistant = "assistant"
 	ChatMessageRoleFunction  = "function"
