@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"slices"
@@ -156,12 +157,10 @@ func (c *Client) sendRequest(req *http.Request, v Response, retryOpts ...RetryOp
 		bodyBytes, err = io.ReadAll(req.Body)
 		_ = req.Body.Close()
 		if err != nil {
-			failures = append(failures, fmt.Sprintf("failed to read request body: %v", err))
-			return fmt.Errorf("failed to read request body: %v; failures: %v", err, strings.Join(failures, "; "))
+			return fmt.Errorf("failed to read request body: %v", err)
 		}
 	}
 
-retryLoop:
 	for i := 0; i <= options.Retries; i++ {
 
 		// Reset body to the original request body
@@ -189,8 +188,9 @@ retryLoop:
 
 		// exit on non-retriable status codes
 		if !options.canRetry(resp.StatusCode) {
-			failures = append(failures, fmt.Sprintf("exiting due to non-retriable error in try #%d/%d: %v", i+1, options.Retries+1, resp.StatusCode))
-			return fmt.Errorf("request failed on non-retriable error: %v", strings.Join(failures, "; "))
+			failures = append(failures, fmt.Sprintf("exiting due to non-retriable error in try #%d/%d: %d %s", i+1, options.Retries+1, resp.StatusCode, resp.Status))
+			slog.Error("sendRequest failed due to non-retriable statuscode", "code", resp.StatusCode, "status", resp.Status, "tries", i+1, "maxTries", options.Retries+1, "failures", strings.Join(failures, "; "))
+			return fmt.Errorf("request failed on non-retriable status-code: %d %s", resp.StatusCode, resp.Status)
 		}
 
 		// exponential backoff
@@ -198,12 +198,14 @@ retryLoop:
 		jitter := time.Duration(rand.Int63n(int64(baseDelay)))
 		select {
 		case <-req.Context().Done():
-			failures = append(failures, fmt.Sprintf("exiting due to canceled context after try #%d/%d: %v", i+1, options.Retries+1, req.Context().Err()))
-			break retryLoop
+			slog.Error("sendRequest failed due to canceled context", "tries", i+1, "maxTries", options.Retries+1, "failures", strings.Join(failures, "; "))
+			return fmt.Errorf("request failed due to canceled context: %v", req.Context().Err())
 		case <-time.After(delay + jitter):
 		}
 	}
-	return fmt.Errorf("request failed %d times: %v", options.Retries+1, strings.Join(failures, "; "))
+
+	slog.Error("sendRequest failed after exceeding retry limit", "tries", options.Retries+1, "failures", strings.Join(failures, "; "))
+	return fmt.Errorf("request exceeded retry limits: %s", failures[len(failures)-1])
 }
 
 func sendRequestStream[T streamable](client *Client, req *http.Request, retryOpts ...RetryOptions) (*streamReader[T], error) {
@@ -228,12 +230,10 @@ func sendRequestStream[T streamable](client *Client, req *http.Request, retryOpt
 		bodyBytes, err = io.ReadAll(req.Body)
 		_ = req.Body.Close()
 		if err != nil {
-			failures = append(failures, fmt.Sprintf("failed to read request body: %v", err))
-			return nil, fmt.Errorf("failed to read request body: %v; failures: %v", err, strings.Join(failures, "; "))
+			return nil, fmt.Errorf("failed to read request body: %v", err)
 		}
 	}
 
-streamRetryLoop:
 	for i := 0; i <= options.Retries; i++ {
 
 		// Reset body to the original request body
@@ -263,8 +263,9 @@ streamRetryLoop:
 
 		// exit on non-retriable status codes
 		if !options.canRetry(resp.StatusCode) {
-			failures = append(failures, fmt.Sprintf("exiting due to non-retriable error in try #%d/%d: %v", i+1, options.Retries+1, resp.StatusCode))
-			return nil, fmt.Errorf("request failed on non-retriable error: %v", strings.Join(failures, "; "))
+			failures = append(failures, fmt.Sprintf("exiting due to non-retriable error in try #%d/%d: %d %s", i+1, options.Retries+1, resp.StatusCode, resp.Status))
+			slog.Error("sendRequestStream failed due to non-retriable statuscode", "code", resp.StatusCode, "status", resp.Status, "tries", i+1, "maxTries", options.Retries+1, "failures", strings.Join(failures, "; "))
+			return nil, fmt.Errorf("request failed on non-retriable status-code: %d %s", resp.StatusCode, resp.Status)
 		}
 
 		// exponential backoff
@@ -273,11 +274,14 @@ streamRetryLoop:
 		select {
 		case <-req.Context().Done():
 			failures = append(failures, fmt.Sprintf("exiting due to canceled context after try #%d/%d: %v", i+1, options.Retries+1, req.Context().Err()))
-			break streamRetryLoop
+			slog.Error("sendRequestStream failed due to canceled context", "tries", i+1, "maxTries", options.Retries+1, "failures", strings.Join(failures, "; "))
+			return nil, fmt.Errorf("request failed due to canceled context: %v", req.Context().Err())
 		case <-time.After(delay + jitter):
 		}
 	}
-	return nil, fmt.Errorf("request failed %d times: %v", options.Retries+1, strings.Join(failures, "; "))
+
+	slog.Error("sendRequestStream failed after exceeding retry limit", "tries", options.Retries+1, "failures", strings.Join(failures, "; "))
+	return nil, fmt.Errorf("request exceeded retry limits: %s", failures[len(failures)-1])
 }
 
 func (c *Client) setCommonHeaders(req *http.Request) {
