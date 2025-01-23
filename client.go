@@ -259,13 +259,14 @@ func sendRequestStream[T streamable](client *Client, req *http.Request, retryOpt
 		}
 
 		// handle status codes
-		failures = append(failures, fmt.Sprintf("#%d/%d error response received: %v", i+1, options.Retries+1, client.handleErrorResp(resp)))
+		errResp := client.handleErrorResp(resp)
+		failures = append(failures, fmt.Sprintf("#%d/%d error response received: %v", i+1, options.Retries+1, errResp))
 
 		// exit on non-retriable status codes
 		if !options.canRetry(resp.StatusCode) {
 			failures = append(failures, fmt.Sprintf("exiting due to non-retriable error in try #%d/%d: %d %s", i+1, options.Retries+1, resp.StatusCode, resp.Status))
 			slog.Error("sendRequestStream failed due to non-retriable statuscode", "code", resp.StatusCode, "status", resp.Status, "tries", i+1, "maxTries", options.Retries+1, "failures", strings.Join(failures, "; "))
-			return nil, fmt.Errorf("request failed on non-retriable status-code: %d %s", resp.StatusCode, resp.Status)
+			return nil, fmt.Errorf("request failed on non-retriable status-code: %s", resp.StatusCode, errResp.Error())
 		}
 
 		// exponential backoff
@@ -358,11 +359,13 @@ func (c *Client) handleErrorResp(resp *http.Response) error {
 	err := json.NewDecoder(bytes.NewBuffer(data)).Decode(&errRes)
 	if err == nil && errRes.Error != nil && errRes.Error.Message != "" {
 		errRes.Error.HTTPStatusCode = resp.StatusCode
+		errRes.Error.HTTPStatus = resp.Status
 		return errRes.Error
 	}
 
 	return &RequestError{
 		HTTPStatusCode: resp.StatusCode,
+		HTTPStatus:     resp.Status,
 		Err:            errors.New(string(data)),
 	}
 }
