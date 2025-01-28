@@ -266,7 +266,7 @@ func sendRequestStream[T streamable](client *Client, req *http.Request, retryOpt
 		if !options.canRetry(resp.StatusCode) {
 			failures = append(failures, fmt.Sprintf("exiting due to non-retriable error in try #%d/%d: %d %s", i+1, options.Retries+1, resp.StatusCode, resp.Status))
 			slog.Error("sendRequestStream failed due to non-retriable statuscode", "code", resp.StatusCode, "status", resp.Status, "tries", i+1, "maxTries", options.Retries+1, "failures", strings.Join(failures, "; "))
-			return nil, fmt.Errorf("request failed on non-retriable status-code: %s", resp.StatusCode, errResp.Error())
+			return nil, fmt.Errorf("request failed on non-retriable status-code %d: %s", resp.StatusCode, errResp.Error())
 		}
 
 		// exponential backoff
