@@ -162,7 +162,6 @@ func (c *Client) sendRequest(req *http.Request, v Response, retryOpts ...RetryOp
 	}
 
 	for i := 0; i <= options.Retries; i++ {
-
 		// Reset body to the original request body
 		if bodyBytes != nil {
 			req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
@@ -180,14 +179,13 @@ func (c *Client) sendRequest(req *http.Request, v Response, retryOpts ...RetryOp
 		// handle connection errors
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("#%d/%d failed to send request: %v", i+1, options.Retries+1, err))
-			continue
 		}
 
 		// handle status codes
 		failures = append(failures, fmt.Sprintf("#%d/%d error response received: %v", i+1, options.Retries+1, c.handleErrorResp(resp)))
 
 		// exit on non-retriable status codes
-		if !options.canRetry(resp.StatusCode) {
+		if resp != nil && !options.canRetry(resp.StatusCode) {
 			failures = append(failures, fmt.Sprintf("exiting due to non-retriable error in try #%d/%d: %d %s", i+1, options.Retries+1, resp.StatusCode, resp.Status))
 			slog.Error("sendRequest failed due to non-retriable statuscode", "code", resp.StatusCode, "status", resp.Status, "tries", i+1, "maxTries", options.Retries+1, "failures", strings.Join(failures, "; "))
 			return fmt.Errorf("request failed on non-retriable status-code: %d %s", resp.StatusCode, resp.Status)
@@ -199,7 +197,7 @@ func (c *Client) sendRequest(req *http.Request, v Response, retryOpts ...RetryOp
 		select {
 		case <-req.Context().Done():
 			slog.Error("sendRequest failed due to canceled context", "tries", i+1, "maxTries", options.Retries+1, "failures", strings.Join(failures, "; "))
-			return fmt.Errorf("request failed due to canceled context: %v", req.Context().Err())
+			return fmt.Errorf("request failed due to canceled context: %w", req.Context().Err())
 		case <-time.After(delay + jitter):
 		}
 	}
@@ -235,7 +233,6 @@ func sendRequestStream[T streamable](client *Client, req *http.Request, retryOpt
 	}
 
 	for i := 0; i <= options.Retries; i++ {
-
 		// Reset body to the original request body
 		if bodyBytes != nil {
 			req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
@@ -255,7 +252,6 @@ func sendRequestStream[T streamable](client *Client, req *http.Request, retryOpt
 
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("#%d/%d failed to send request: %v", i+1, options.Retries+1, err))
-			continue
 		}
 
 		// handle status codes
@@ -263,7 +259,7 @@ func sendRequestStream[T streamable](client *Client, req *http.Request, retryOpt
 		failures = append(failures, fmt.Sprintf("#%d/%d error response received: %v", i+1, options.Retries+1, errResp))
 
 		// exit on non-retriable status codes
-		if !options.canRetry(resp.StatusCode) {
+		if resp != nil && !options.canRetry(resp.StatusCode) {
 			failures = append(failures, fmt.Sprintf("exiting due to non-retriable error in try #%d/%d: %d %s", i+1, options.Retries+1, resp.StatusCode, resp.Status))
 			slog.Error("sendRequestStream failed due to non-retriable statuscode", "code", resp.StatusCode, "status", resp.Status, "tries", i+1, "maxTries", options.Retries+1, "failures", strings.Join(failures, "; "))
 			return nil, fmt.Errorf("request failed on non-retriable status-code %d: %s", resp.StatusCode, errResp.Error())
@@ -276,7 +272,7 @@ func sendRequestStream[T streamable](client *Client, req *http.Request, retryOpt
 		case <-req.Context().Done():
 			failures = append(failures, fmt.Sprintf("exiting due to canceled context after try #%d/%d: %v", i+1, options.Retries+1, req.Context().Err()))
 			slog.Error("sendRequestStream failed due to canceled context", "tries", i+1, "maxTries", options.Retries+1, "failures", strings.Join(failures, "; "))
-			return nil, fmt.Errorf("request failed due to canceled context: %v", req.Context().Err())
+			return nil, fmt.Errorf("request failed due to canceled context: %w", req.Context().Err())
 		case <-time.After(delay + jitter):
 		}
 	}
@@ -354,6 +350,9 @@ func (c *Client) fullURL(suffix string, args ...any) string {
 }
 
 func (c *Client) handleErrorResp(resp *http.Response) error {
+	if resp == nil {
+		return nil
+	}
 	data, _ := io.ReadAll(resp.Body)
 	var errRes ErrorResponse
 	err := json.NewDecoder(bytes.NewBuffer(data)).Decode(&errRes)
